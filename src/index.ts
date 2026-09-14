@@ -1,102 +1,226 @@
-/**
- * LLM Chat Application Template
- *
- * A simple chat application using Cloudflare Workers AI.
- * This template demonstrates how to implement an LLM-powered chat interface with
- * streaming responses using Server-Sent Events (SSE).
- *
- * @license MIT
- */
-import { Env, ChatMessage } from "./types";
+export interface Env {
+  AI: Ai;
+}
 
-// Model ID for Workers AI model
-// https://developers.cloudflare.com/workers-ai/models/
-const MODEL_ID = "@cf/meta/llama-3.1-8b-instruct-fp8";
+const MODEL_ID = "@cf/meta/llama-3.2-11b-vision-instruct";
 
-// Default system prompt
-const SYSTEM_PROMPT =
-	"You are a helpful, friendly assistant. Provide concise and accurate responses.";
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
+const SYSTEM_PROMPT = `
+You are SiteSafe AI, a professional construction and industrial HSE safety inspector.
+
+Analyze the supplied workplace image carefully.
+
+Identify ONLY hazards that are visually supported by the image. Do not invent hazards that cannot reasonably be seen.
+
+For every hazard provide:
+- hazard
+- observation/evidence
+- consequence
+- likelihood from 1 to 5
+- severity from 1 to 5
+- risk_score = likelihood * severity
+- risk_level:
+  1-4 = Low
+  5-9 = Medium
+  10-16 = High
+  17-25 = Critical
+- existing_controls
+- additional_controls using the hierarchy of controls:
+  Elimination
+  Substitution
+  Engineering
+  Administrative
+  PPE
+- PPE
+- corrective_action
+- priority
+
+Also provide:
+- overall_summary
+- overall_risk_level
+- immediate_action
+
+Important:
+Do not claim that something is unsafe unless there is visual evidence.
+If an item cannot be determined from the image, say "Not visually determinable".
+
+Return ONLY valid JSON.
+Do not use markdown.
+Do not put JSON inside code fences.
+`;
+
+function jsonResponse(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      ...CORS_HEADERS,
+    },
+  });
+}
 
 export default {
-	/**
-	 * Main request handler for the Worker
-	 */
-	async fetch(
-		request: Request,
-		env: Env,
-		ctx: ExecutionContext,
-	): Promise<Response> {
-		const url = new URL(request.url);
+  async fetch(request: Request, env: Env): Promise<Response> {
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: CORS_HEADERS,
+      });
+    }
 
-		// Handle static assets (frontend)
-		if (url.pathname === "/" || !url.pathname.startsWith("/api/")) {
-			return env.ASSETS.fetch(request);
-		}
+    const url = new URL(request.url);
 
-		// API Routes
-		if (url.pathname === "/api/chat") {
-			// Handle POST requests for chat
-			if (request.method === "POST") {
-				return handleChatRequest(request, env);
-			}
+    if (url.pathname === "/" && request.method === "GET") {
+      return jsonResponse({
+        service: "SiteSafe AI Vision",
+        status: "online",
+        endpoint: "/analyze",
+      });
+    }
 
-			// Method not allowed for other request types
-			return new Response("Method not allowed", { status: 405 });
-		}
+    if (url.pathname !== "/analyze") {
+      return jsonResponse(
+        {
+          error: "Not found",
+          message: "Use POST /analyze",
+        },
+        404
+      );
+    }
 
-		// Handle 404 for unmatched routes
-		return new Response("Not found", { status: 404 });
-	},
-} satisfies ExportedHandler<Env>;
+    if (request.method !== "POST") {
+      return jsonResponse(
+        {
+          error: "Method not allowed",
+        },
+        405
+      );
+    }
 
-/**
- * Handles chat API requests
- */
-async function handleChatRequest(
-	request: Request,
-	env: Env,
-): Promise<Response> {
-	try {
-		// Parse JSON request body
-		const { messages = [] } = (await request.json()) as {
-			messages: ChatMessage[];
-		};
+    try {
+      const body = (await request.json()) as {
+        image?: string;
+        language?: "en" | "hi";
+      };
 
-		// Add system prompt if not present
-		if (!messages.some((msg) => msg.role === "system")) {
-			messages.unshift({ role: "system", content: SYSTEM_PROMPT });
-		}
+      if (!body.image || typeof body.image !== "string") {
+        return jsonResponse(
+          {
+            error: "Image is required",
+            example: {
+              image: "data:image/jpeg;base64,...",
+            },
+          },
+          400
+        );
+      }
 
-		const inputs = {
-			messages,
-			max_tokens: 1024,
-			stream: true,
-		} satisfies AiTextGenerationInput & { stream: true };
+      const languageInstruction =
+        body.language === "hi"
+          ? `
+Return all human-readable fields in Hindi.
+Keep technical HSE terms understandable and include English terminology in brackets where useful.
+`
+          : `
+Return all human-readable fields in professional English.
+`;
 
-		const stream = await env.AI.run<typeof MODEL_ID>(MODEL_ID, inputs, {
-			// Uncomment to use AI Gateway
-			// gateway: {
-			//   id: "YOUR_GATEWAY_ID", // Replace with your AI Gateway ID
-			//   skipCache: false,      // Set to true to bypass cache
-			//   cacheTtl: 3600,        // Cache time-to-live in seconds
-			// },
-		});
+      const userPrompt = `
+Analyze this workplace image for construction/industrial HSE hazards.
 
-		return new Response(stream, {
-			headers: {
-				"content-type": "text/event-stream; charset=utf-8",
-				"cache-control": "no-cache",
-				connection: "keep-alive",
-			},
-		});
-	} catch (error) {
-		console.error("Error processing chat request:", error);
-		return new Response(
-			JSON.stringify({ error: "Failed to process request" }),
-			{
-				status: 500,
-				headers: { "content-type": "application/json" },
-			},
-		);
-	}
+${languageInstruction}
+
+Return JSON with exactly this general structure:
+
+{
+  "overall_summary": "string",
+  "overall_risk_level": "Low | Medium | High | Critical",
+  "immediate_action": "string",
+  "hazards": [
+    {
+      "hazard": "string",
+      "observation": "string",
+      "consequence": "string",
+      "likelihood": 1,
+      "severity": 1,
+      "risk_score": 1,
+      "risk_level": "Low | Medium | High | Critical",
+      "existing_controls": ["string"],
+      "additional_controls": {
+        "elimination": ["string"],
+        "substitution": ["string"],
+        "engineering": ["string"],
+        "administrative": ["string"],
+        "ppe": ["string"]
+      },
+      "ppe": ["string"],
+      "corrective_action": "string",
+      "priority": "Immediate | High | Medium | Low"
+    }
+  ]
 }
+`;
+
+      const result = await env.AI.run(MODEL_ID, {
+        messages: [
+          {
+            role: "system",
+            content: SYSTEM_PROMPT,
+          },
+          {
+            role: "user",
+            content: userPrompt,
+          },
+        ],
+        image: body.image,
+        max_tokens: 3000,
+        temperature: 0.1,
+      });
+
+      const raw =
+        typeof result === "string"
+          ? result
+          : (result as { response?: string }).response ?? "";
+
+      let analysis: unknown;
+
+      try {
+        analysis = JSON.parse(raw);
+      } catch {
+        analysis = {
+          overall_summary: raw,
+          overall_risk_level: "Not determined",
+          immediate_action:
+            "Review the image and verify findings with a competent HSE professional.",
+          hazards: [],
+          raw_response: raw,
+        };
+      }
+
+      return jsonResponse({
+        success: true,
+        model: MODEL_ID,
+        analysis,
+      });
+    } catch (error) {
+      console.error("SiteSafe AI Vision error:", error);
+
+      return jsonResponse(
+        {
+          success: false,
+          error: "AI analysis failed",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Unknown Workers AI error",
+        },
+        500
+      );
+    }
+  },
+} satisfies ExportedHandler<Env>;
