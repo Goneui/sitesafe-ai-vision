@@ -74,7 +74,16 @@ export default {
     }
 
     const url = new URL(request.url);
-
+if (url.pathname === "/agree" && request.method === "GET") {
+  try {
+    const result = await env.AI.run(MODEL_ID, {
+      prompt: "agree"
+    });
+    return jsonResponse({ license: "accepted", result });
+  } catch (error) {
+    return jsonResponse({ error: String(error) }, 500);
+  }
+}
     if (url.pathname === "/" && request.method === "GET") {
       return jsonResponse({
         service: "SiteSafe AI Vision",
