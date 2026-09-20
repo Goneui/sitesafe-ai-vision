@@ -196,20 +196,94 @@ Return JSON with exactly this general structure:
           ? result
           : (result as { response?: string }).response ?? "";
 
-      let analysis: unknown;
+      let analysis: any;
 
-      try {
-        analysis = JSON.parse(raw);
-      } catch {
-        analysis = {
-          overall_summary: raw,
-          overall_risk_level: "Not determined",
-          immediate_action:
-            "Review the image and verify findings with a competent HSE professional.",
-          hazards: [],
-          raw_response: raw,
-        };
-      }
+function extractJson(text: string) {
+  const cleaned = text
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
+
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error("No JSON object found");
+  }
+
+  return JSON.parse(cleaned.slice(start, end + 1));
+}
+
+try {
+  analysis = extractJson(raw);
+} catch {
+  try {
+    const repair = await env.AI.run(MODEL_ID, {
+      messages: [
+        {
+          role: "system",
+          content:
+            "Convert the supplied HSE safety analysis into ONLY valid JSON. Do not use markdown. Do not add commentary."
+        },
+        {
+          role: "user",
+          content: `
+Return this exact structure:
+
+{
+  "overall_summary": "string",
+  "overall_risk_level": "Low | Medium | High | Critical",
+  "immediate_action": "string",
+  "hazards": [
+    {
+      "hazard": "string",
+      "observation": "string",
+      "consequence": "string",
+      "likelihood": 1,
+      "severity": 1,
+      "risk_score": 1,
+      "risk_level": "Low | Medium | High | Critical",
+      "existing_controls": [],
+      "additional_controls": {
+        "elimination": [],
+        "substitution": [],
+        "engineering": [],
+        "administrative": [],
+        "ppe": []
+      },
+      "ppe": [],
+      "corrective_action": "string",
+      "priority": "Immediate | High | Medium | Low"
+    }
+  ]
+}
+
+HSE analysis to convert:
+${raw}
+`
+        }
+      ],
+      max_tokens: 3000,
+      temperature: 0.1
+    });
+
+    const repairedRaw =
+      typeof repair === "string"
+        ? repair
+        : (repair as { response?: string }).response ?? "";
+
+    analysis = extractJson(repairedRaw);
+  } catch {
+    analysis = {
+      overall_summary: raw,
+      overall_risk_level: "Not determined",
+      immediate_action:
+        "Review the image and verify findings with a competent HSE professional.",
+      hazards: [],
+      raw_response: raw
+    };
+  }
+}
 
       return jsonResponse({
         success: true,
