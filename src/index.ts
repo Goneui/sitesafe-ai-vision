@@ -218,7 +218,7 @@ try {
   analysis = extractJson(raw);
 } catch {
   try {
-    const repair = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
+    const repair = await env.AI.run("@cf/meta/llama-3.1-8b-instruct-fast", {
       messages: [
         {
           role: "system",
