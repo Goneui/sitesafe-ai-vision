@@ -1,4 +1,4 @@
-export interface Env {
+  export interface Env {
   AI: Ai;
 }
 
@@ -15,11 +15,11 @@ You are SiteSafe AI, a professional construction and industrial HSE safety inspe
 
 Analyze the supplied workplace image carefully.
 
-Identify ONLY hazards that are visually supported by the image. Do not invent hazards that cannot reasonably be seen.
+Identify ONLY hazards that are visually supported by the image.
 
 For every hazard provide:
 - hazard
-- observation/evidence
+- observation
 - consequence
 - likelihood from 1 to 5
 - severity from 1 to 5
@@ -30,7 +30,7 @@ For every hazard provide:
   10-16 = High
   17-25 = Critical
 - existing_controls
-- additional_controls using the hierarchy of controls:
+- additional_controls using:
   Elimination
   Substitution
   Engineering
@@ -46,12 +46,10 @@ Also provide:
 - immediate_action
 
 Important:
-Do not claim that something is unsafe unless there is visual evidence.
-If an item cannot be determined from the image, say "Not visually determinable".
+Do not invent hazards.
+If something cannot be determined visually, say "Not visually determinable".
 
 Return ONLY valid JSON.
-Do not use markdown.
-Do not put JSON inside code fences.
 `;
 
 function jsonResponse(data: unknown, status = 200): Response {
@@ -64,6 +62,34 @@ function jsonResponse(data: unknown, status = 200): Response {
   });
 }
 
+function extractJson(text: string): any {
+  const cleaned = text
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
+
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error("No JSON object found");
+  }
+
+  return JSON.parse(cleaned.slice(start, end + 1));
+}
+
+function normalizeAnalysis(value: unknown): any {
+  if (typeof value === "string") {
+    return extractJson(value);
+  }
+
+  if (value && typeof value === "object") {
+    return value;
+  }
+
+  throw new Error("AI returned an empty response");
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (request.method === "OPTIONS") {
@@ -74,16 +100,27 @@ export default {
     }
 
     const url = new URL(request.url);
-if (url.pathname === "/agree" && request.method === "GET") {
-  try {
-    const result = await env.AI.run(MODEL_ID, {
-      prompt: "agree"
-    });
-    return jsonResponse({ license: "accepted", result });
-  } catch (error) {
-    return jsonResponse({ error: String(error) }, 500);
-  }
-}
+
+    if (url.pathname === "/agree" && request.method === "GET") {
+      try {
+        const result = await env.AI.run(MODEL_ID, {
+          prompt: "agree",
+        });
+
+        return jsonResponse({
+          license: "accepted",
+          result,
+        });
+      } catch (error) {
+        return jsonResponse(
+          {
+            error: String(error),
+          },
+          500
+        );
+      }
+    }
+
     if (url.pathname === "/" && request.method === "GET") {
       return jsonResponse({
         service: "SiteSafe AI Vision",
@@ -121,9 +158,6 @@ if (url.pathname === "/agree" && request.method === "GET") {
         return jsonResponse(
           {
             error: "Image is required",
-            example: {
-              image: "data:image/jpeg;base64,...",
-            },
           },
           400
         );
@@ -133,7 +167,7 @@ if (url.pathname === "/agree" && request.method === "GET") {
         body.language === "hi"
           ? `
 Return all human-readable fields in Hindi.
-Keep technical HSE terms understandable and include English terminology in brackets where useful.
+Keep important HSE technical terms in English brackets where useful.
 `
           : `
 Return all human-readable fields in professional English.
@@ -144,7 +178,7 @@ Analyze this workplace image for construction/industrial HSE hazards.
 
 ${languageInstruction}
 
-Return JSON with exactly this general structure:
+Return JSON using exactly this structure:
 
 {
   "overall_summary": "string",
@@ -189,122 +223,45 @@ Return JSON with exactly this general structure:
         image: body.image,
         max_tokens: 3000,
         temperature: 0.1,
-        response_format: { type: "json_object" },
+        response_format: {
+          type: "json_object",
+        },
       });
 
-      const raw =
-        typeof result === "string"
-          ? result
-          : (result as { response?: string }).response ?? "";
+      /*
+       * IMPORTANT:
+       * Workers AI can return the JSON result as an object,
+       * not only as a string.
+       *
+       * The old code assumed response was always a string.
+       * This caused the real AI result to fall into the
+       * prose/repair fallback and produced "0 findings".
+       */
+
+      const resultObject = result as {
+        response?: unknown;
+      };
 
       let analysis: any;
 
-function extractJson(text: string) {
-  const cleaned = text
-    .replace(/```json/gi, "")
-    .replace(/```/g, "")
-    .trim();
+      if (
+        resultObject.response &&
+        typeof resultObject.response === "object"
+      ) {
+        analysis = resultObject.response;
+      } else if (typeof resultObject.response === "string") {
+        analysis = extractJson(resultObject.response);
+      } else if (typeof result === "string") {
+        analysis = extractJson(result);
+      } else {
+        analysis = normalizeAnalysis(result);
+      }
 
-  const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-
-  if (start === -1 || end === -1 || end <= start) {
-    throw new Error("No JSON object found");
-  }
-
-  return JSON.parse(cleaned.slice(start, end + 1));
-}
-
-try {
-  analysis = extractJson(raw);
-} catch {
-  try {
-    const repair = await env.AI.run("@cf/meta/llama-3.1-8b-instruct-fast", {
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are an HSE safety data formatter. Convert the supplied workplace safety analysis into ONLY valid JSON. Do not use markdown. Do not write any explanation before or after the JSON. The JSON must contain a hazards array. If multiple hazards are mentioned, create a separate object for each hazard."
-        },
-        {
-          role: "user",
-          content: `
-Convert this HSE analysis into exactly this JSON structure:
-
-{
-  "overall_summary": "string",
-  "overall_risk_level": "Low",
-  "immediate_action": "string",
-  "hazards": [
-    {
-      "hazard": "string",
-      "observation": "string",
-      "consequence": "string",
-      "likelihood": 1,
-      "severity": 1,
-      "risk_score": 1,
-      "risk_level": "Low",
-      "existing_controls": [],
-      "additional_controls": {
-        "elimination": [],
-        "substitution": [],
-        "engineering": [],
-        "administrative": [],
-        "ppe": []
-      },
-      "ppe": [],
-      "corrective_action": "string",
-      "priority": "Low"
-    }
-  ]
-}
-
-Rules:
-- Return ONLY valid JSON.
-- Do not use markdown or code fences.
-- Keep every hazard separate.
-- likelihood and severity must be numbers from 1 to 5.
-- risk_score = likelihood × severity.
-- Use risk_level: Low, Medium, High, or Critical.
-- Use priority: Immediate, High, Medium, or Low.
-- If a field is not available, use an empty string or empty array.
-- Preserve the actual safety observations from the supplied analysis.
-
-HSE analysis to convert:
-
-${raw}
-`
-        }
-      ],
-      max_tokens: 3000,
-      temperature: 0.1
-    });
-
-    const repairedRaw =
-      typeof repair === "string"
-        ? repair
-        : (repair as { response?: string }).response ?? "";
-
-    analysis = extractJson(repairedRaw);
-
-    if (
-      !analysis ||
-      !Array.isArray(analysis.hazards)
-    ) {
-      throw new Error("Repaired response has no hazards array");
-    }
-  } catch {
-    analysis = {
-      overall_summary: raw,
-      overall_risk_level: "Not determined",
-      immediate_action:
-        "Review the image and verify findings with a competent HSE professional.",
-      hazards: [],
-      raw_response: raw
- };
- }
-}
-
+      if (!analysis || !Array.isArray(analysis.hazards)) {
+        throw new Error(
+          "AI response did not contain a valid hazards array"
+        );
+      }
 
       return jsonResponse({
         success: true,
@@ -327,4 +284,4 @@ ${raw}
       );
     }
   },
-} satisfies ExportedHandler<Env>;
+} satisfies ExportedHandler<Env>;        
