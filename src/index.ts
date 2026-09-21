@@ -300,10 +300,10 @@ ${raw}
         "Review the image and verify findings with a competent HSE professional.",
       hazards: [],
       raw_response: raw
-    };
-  }
+ };
+ }
 }
-}
+
 
       return jsonResponse({
         success: true,
