@@ -189,6 +189,7 @@ Return JSON with exactly this general structure:
         image: body.image,
         max_tokens: 3000,
         temperature: 0.1,
+        response_format: { type: "json_object" },
       });
 
       const raw =
