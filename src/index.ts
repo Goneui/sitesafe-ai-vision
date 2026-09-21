@@ -218,21 +218,21 @@ try {
   analysis = extractJson(raw);
 } catch {
   try {
-    const repair = await env.AI.run(MODEL_ID, {
+    const repair = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
       messages: [
         {
           role: "system",
           content:
-            "Convert the supplied HSE safety analysis into ONLY valid JSON. Do not use markdown. Do not add commentary."
+            "You are an HSE safety data formatter. Convert the supplied workplace safety analysis into ONLY valid JSON. Do not use markdown. Do not write any explanation before or after the JSON. The JSON must contain a hazards array. If multiple hazards are mentioned, create a separate object for each hazard."
         },
         {
           role: "user",
           content: `
-Return this exact structure:
+Convert this HSE analysis into exactly this JSON structure:
 
 {
   "overall_summary": "string",
-  "overall_risk_level": "Low | Medium | High | Critical",
+  "overall_risk_level": "Low",
   "immediate_action": "string",
   "hazards": [
     {
@@ -242,7 +242,7 @@ Return this exact structure:
       "likelihood": 1,
       "severity": 1,
       "risk_score": 1,
-      "risk_level": "Low | Medium | High | Critical",
+      "risk_level": "Low",
       "existing_controls": [],
       "additional_controls": {
         "elimination": [],
@@ -253,12 +253,24 @@ Return this exact structure:
       },
       "ppe": [],
       "corrective_action": "string",
-      "priority": "Immediate | High | Medium | Low"
+      "priority": "Low"
     }
   ]
 }
 
+Rules:
+- Return ONLY valid JSON.
+- Do not use markdown or code fences.
+- Keep every hazard separate.
+- likelihood and severity must be numbers from 1 to 5.
+- risk_score = likelihood × severity.
+- Use risk_level: Low, Medium, High, or Critical.
+- Use priority: Immediate, High, Medium, or Low.
+- If a field is not available, use an empty string or empty array.
+- Preserve the actual safety observations from the supplied analysis.
+
 HSE analysis to convert:
+
 ${raw}
 `
         }
@@ -273,6 +285,13 @@ ${raw}
         : (repair as { response?: string }).response ?? "";
 
     analysis = extractJson(repairedRaw);
+
+    if (
+      !analysis ||
+      !Array.isArray(analysis.hazards)
+    ) {
+      throw new Error("Repaired response has no hazards array");
+    }
   } catch {
     analysis = {
       overall_summary: raw,
@@ -283,6 +302,7 @@ ${raw}
       raw_response: raw
     };
   }
+}
 }
 
       return jsonResponse({
