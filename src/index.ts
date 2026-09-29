@@ -25,16 +25,42 @@ function out(x:any,status=200){
 }
 
 function norm(r:any):any{
+  let raw:any=r;
+
   if(r&&typeof r==="object"){
-    if(r.response&&typeof r.response==="object")return r.response;
+    if(r.response&&typeof r.response==="object")
+      return r.response;
+
     if(typeof r.response==="string")
-      return JSON.parse(r.response.replace(/```json|```/gi,"").trim());
-    if(typeof r.text==="string")
-      return JSON.parse(r.text.replace(/```json|```/gi,"").trim());
+      raw=r.response;
+    else if(typeof r.text==="string")
+      raw=r.text;
   }
-  if(typeof r==="string")
-    return JSON.parse(r.replace(/```json|```/gi,"").trim());
-  throw Error("Empty AI response");
+
+  if(typeof raw!=="string")
+    throw Error("Empty AI response");
+
+  raw=raw
+    .replace(/```json/gi,"")
+    .replace(/```/g,"")
+    .trim();
+
+  try{
+    return JSON.parse(raw);
+  }catch{}
+
+  const start=raw.indexOf("{");
+  const end=raw.lastIndexOf("}");
+
+  if(start>=0 && end>start){
+    const candidate=raw.slice(start,end+1);
+
+    try{
+      return JSON.parse(candidate);
+    }catch{}
+  }
+
+  throw Error("AI returned non-JSON response");
 }
 
 function clean(r:any){
